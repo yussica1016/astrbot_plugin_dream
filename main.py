@@ -28,7 +28,7 @@ class DreamPlugin(Star):
         self.dream_model = self._cfg("dream_model", "Qwen/Qwen2.5-7B-Instruct")
         self.fallback_model = self._cfg("fallback_model", "deepseek-ai/DeepSeek-V3")
         self.history_file = self._cfg("history_file", "")
-        self.kb_base_dir = self._cfg("kb_base_dir", "/AstrBot/data/knowledge_base/")
+        self.kb_base_dir = self._cfg("kb_base_dir", "")
 
     def _cfg(self, key, default=""):
         if isinstance(self.config, dict):

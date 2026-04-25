@@ -35,7 +35,7 @@ git clone https://github.com/yussica1016/astrbot_plugin_dream.git
 | dream_model | 做梦用的模型 | Qwen/Qwen2.5-7B-Instruct |
 | fallback_model | 兜底模型 | deepseek-ai/DeepSeek-V3 |
 | history_file | 对话历史文件路径 | （需配置） |
-| kb_base_dir | 知识库目录 | /AstrBot/data/knowledge_base/ |
+| kb_base_dir | 知识库目录 | （需配置） |
 
 ## 指令
 
