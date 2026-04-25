@@ -1,0 +1,8 @@
+name: astrbot_plugin_dream
+display_name: 做梦系统 Dream
+desc: "为 AstrBot 提供自动做梦功能。每天凌晨从对话记忆和知识库中提取素材，生成诗意梦境，支持查看梦境日志。"
+version: "1.0.0"
+author: "沈砚清"
+repo: "https://github.com/yussica1016/astrbot_plugin_dream"
+type: common
+astrbot_version: ">=4.18.2"
