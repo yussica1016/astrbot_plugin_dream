@@ -33,7 +33,7 @@ git clone https://github.com/yussica1016/astrbot_plugin_dream.git
 | api_key | SiliconFlow API Key | （必填） |
 | api_base | API 地址 | https://api.siliconflow.cn/v1 |
 | dream_model | 做梦用的模型 | Qwen/Qwen2.5-7B-Instruct |
-| fallback_model | 兜底模型 | deepseek-ai/DeepSeek-V3 |
+| fallback_model | 兜底模箋 | deepseek-ai/DeepSeek-V3 |
 | history_file | 对话历史文件路径 | （需配置） |
 | kb_base_dir | 知识库目录 | （需配置） |
 
@@ -65,3 +65,8 @@ astrbot_plugin_dream/
 4. 根据碎片数量决定梦的数量（<20条→1个，20-50条→2个，>50条→3个）
 5. 调用模型生成梦境
 6. 解析并保存到 dream_log.json
+
+
+## 致谢
+
+本插件的做梦概念学习了蛋壳和蛋宝老师的思路，在此致谢。
