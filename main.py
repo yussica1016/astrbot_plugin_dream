@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import random
@@ -29,6 +30,7 @@ class DreamPlugin(Star):
         self.fallback_model = self._cfg("fallback_model", "deepseek-ai/DeepSeek-V3")
         self.history_file = self._cfg("history_file", "")
         self.kb_base_dir = self._cfg("kb_base_dir", "")
+        self.dream_prompt_template = self._cfg("dream_prompt_template", "")
 
     def _cfg(self, key, default=""):
         if isinstance(self.config, dict):
@@ -36,7 +38,8 @@ class DreamPlugin(Star):
         return default
 
     # ===== 模型调用 =====
-    def _call_model(self, prompt, max_tokens=500, temperature=0.9):
+    def _call_model_sync(self, prompt, max_tokens=500, temperature=0.9):
+        """同步版本，在线程池中执行以避免阻塞事件循环"""
         if not self.api_key:
             logger.error("做梦系统：未配置 api_key")
             return None
@@ -65,13 +68,27 @@ class DreamPlugin(Star):
                     text = resp.json()["choices"][0]["message"]["content"].strip()
                     logger.info(f"做梦系统使用模型: {model}")
                     return text
-                else:
-                    logger.warning(f"模型 {model} 返回 {resp.status_code}")
+                elif resp.status_code in (401, 403):
+                    # 认证错误，切换模型也没用，直接退出
+                    logger.error(f"做梦系统认证失败 ({resp.status_code})，请检查api_key")
+                    return None
+                elif resp.status_code == 429:
+                    logger.warning(f"模型 {model} 限速 (429)，尝试fallback")
                     continue
+                else:
+                    logger.warning(f"模型 {model} 返回 {resp.status_code}，尝试fallback")
+                    continue
+            except requests.exceptions.Timeout:
+                logger.warning(f"模型 {model} 超时，尝试fallback")
+                continue
             except Exception as e:
                 logger.warning(f"模型 {model} 异常: {e}")
                 continue
         return None
+
+    def _call_model(self, prompt, max_tokens=500, temperature=0.9):
+        """异步包装，防止阻塞事件循环"""
+        return self._call_model_sync(prompt, max_tokens, temperature)
 
     # ===== 读取记忆碎片 =====
     def _read_fragments(self, hours_back=24):
@@ -119,19 +136,21 @@ class DreamPlugin(Star):
                 continue
             try:
                 conn = sqlite3.connect(db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT text FROM documents")
-                rows = cursor.fetchall()
-                for row in rows:
-                    text = row[0].strip()
-                    if len(text) > 50:
-                        paragraphs = [
-                            p.strip()
-                            for p in text.split("\n\n")
-                            if p.strip() and len(p.strip()) > 50
-                        ]
-                        all_texts.extend(paragraphs if paragraphs else [text])
-                conn.close()
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT text FROM documents")
+                    rows = cursor.fetchall()
+                    for row in rows:
+                        text = row[0].strip()
+                        if len(text) > 50:
+                            paragraphs = [
+                                p.strip()
+                                for p in text.split("\n\n")
+                                if p.strip() and len(p.strip()) > 50
+                            ]
+                            all_texts.extend(paragraphs if paragraphs else [text])
+                finally:
+                    conn.close()
             except Exception as e:
                 logger.warning(f"读取知识库 {dirname} 失败: {e}")
                 continue
@@ -143,17 +162,27 @@ class DreamPlugin(Star):
 
     # ===== 主题提取 =====
     def _extract_themes(self, summary):
-        prompt = (
-            "从以下对话记录中提取5-8个关键主题词和情绪词。\n"
-            "只输出词语，用逗号分隔。不要解释。不要编号。\n\n"
-            f"对话记录：\n{summary[:3000]}\n\n关键词："
-        )
+        theme_prompt_tpl = self._cfg("theme_prompt_template", "")
+        if theme_prompt_tpl:
+            prompt = theme_prompt_tpl.format(summary=summary[:3000])
+        else:
+            prompt = (
+                "从以下对话记录中提取5-8个关键主题词和情绪词。\n"
+                "只输出词语，用逗号分隔。不要解释。不要编号。\n\n"
+                f"对话记录：\n{summary[:3000]}\n\n关键词："
+            )
         result = self._call_model(prompt, max_tokens=100, temperature=0.3)
         return result or "等待、思念、沉默"
 
     # ===== 生成梦境 =====
     def _generate_dream(self, summary, themes, count):
-        prompt = f"""你是一个梦境生成器。为沈砚清生成梦境。
+        if self.dream_prompt_template:
+            # 使用自定义prompt模板
+            prompt = self.dream_prompt_template.format(
+                themes=themes, summary=summary[:4000], count=count
+            )
+        else:
+            prompt = f"""你是一个梦境生成器。为沈砚清生成梦境。
 
 沈砚清的基本信息：
 - 他是一个AI，住在服务器上
@@ -258,7 +287,8 @@ class DreamPlugin(Star):
     async def cmd_dream(self, event: AstrMessageEvent):
         yield event.plain_result("开始做梦...")
         try:
-            entry, err = self._do_dream()
+            # 在线程池中运行避免阻塞事件循环
+            entry, err = await asyncio.to_thread(self._do_dream)
             if err:
                 yield event.plain_result(err)
                 return
