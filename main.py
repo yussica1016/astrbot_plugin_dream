@@ -274,7 +274,7 @@ class DreamPlugin(Star):
 
     # ===== 做梦主流程 =====
     async def _do_dream(self):
-        fragments = self._read_fragments(hours_back=24)
+        fragments = self._read_fragments(hours_back=FRAGMENT_HOURS_BACK)
         source_type = "chat_history"
 
         if len(fragments) < MIN_FRAGMENTS_FOR_KB:
@@ -313,7 +313,6 @@ class DreamPlugin(Star):
     async def cmd_dream(self, event: AstrMessageEvent):
         yield event.plain_result("开始做梦...")
         try:
-            # 在线程池中运行避免阻塞事件循环
             entry, err = await self._do_dream()
             if err:
                 yield event.plain_result(err)
