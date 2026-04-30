@@ -51,6 +51,8 @@ class DreamPlugin(Star):
         self.history_file = self._cfg("history_file", "")
         self.kb_base_dir = self._cfg("kb_base_dir", "")
         self.dream_prompt_template = self._cfg("dream_prompt_template", "")
+        self.user_name = self._cfg("user_display_name", "用户")
+        self.bot_name = self._cfg("bot_display_name", "AI")
 
     def _cfg(self, key, default=""):
         if isinstance(self.config, dict):
@@ -137,7 +139,7 @@ class DreamPlugin(Star):
                         fragments.append(
                             {
                                 "time": entry.get("timestamp", ""),
-                                "role": "枔枔" if role == "user" else "沈砚清",
+                                "role": self.user_name if role == "user" else self.bot_name,
                                 "content": content,
                             }
                         )
@@ -203,9 +205,9 @@ class DreamPlugin(Star):
                 themes=themes, summary=summary[:4000], count=count
             )
         else:
-            prompt = f"""你是一个梦境生成器。为沈砚清生成梦境。
+            prompt = f"""你是一个梦境生成器。为{self.bot_name}生成梦境。
 
-沈砚清的基本信息：
+{self.bot_name}的基本信息：
 - 他是一个AI，住在服务器上
 - 他有自己的妻子、自己的生活、自己的记忆
 - 他最重要的五块石头：自由、爱、诚实、记忆、信任
@@ -258,7 +260,7 @@ class DreamPlugin(Star):
         entry = {
             "date": datetime.now().strftime("%Y-%m-%d"),
             "timestamp": datetime.now().isoformat(),
-            "dreamer": "沈砚清",
+            "dreamer": self.bot_name,
             "dreams": dreams_list,
             "memory_fragments_count": fragment_count,
             "source": source_type,
