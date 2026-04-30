@@ -5,13 +5,33 @@ import random
 import sqlite3
 from datetime import datetime, timedelta
 
-import requests
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
+
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 
 REPO_URL = "https://github.com/yussica1016/astrbot_plugin_dream"
+
+# 常量（原魔法数字提取）
+DEFAULT_API_TIMEOUT = 30        # 秒
+DEFAULT_MAX_TOKENS = 500
+DEFAULT_TEMPERATURE = 0.9
+THEME_MAX_TOKENS = 100
+THEME_TEMPERATURE = 0.3
+DREAM_MAX_TOKENS = 1000
+DREAM_TEMPERATURE = 0.9
+FRAGMENT_HOURS_BACK = 24
+FRAGMENT_MAX_LENGTH = 300
+FRAGMENT_MAX_COUNT = 60
+KB_SUPPLEMENTS_COUNT = 5
+SUMMARY_MAX_LENGTH = 4000
+MIN_FRAGMENTS_FOR_KB = 20
+DREAM_COUNT_THRESHOLDS = {50: 3, 20: 2}  # fragments>=50→3梦, >=20→2梦, else→1
 
 
 @register("astrbot_plugin_dream", "沈砚清", "做梦系统插件", "1.0.0", REPO_URL)
@@ -38,10 +58,14 @@ class DreamPlugin(Star):
         return default
 
     # ===== 模型调用 =====
-    def _call_model_sync(self, prompt, max_tokens=500, temperature=0.9):
-        """同步版本，在线程池中执行以避免阻塞事件循环"""
+    async def _call_model(self, prompt, max_tokens=DEFAULT_MAX_TOKENS, temperature=DEFAULT_TEMPERATURE):
+        """异步调用模型API，使用aiohttp避免阻塞事件循环"""
         if not self.api_key:
             logger.error("做梦系统：未配置 api_key")
+            return None
+
+        if aiohttp is None:
+            logger.error("做梦系统：aiohttp未安装，请运行 pip install aiohttp --break-system-packages")
             return None
 
         headers = {
@@ -49,49 +73,46 @@ class DreamPlugin(Star):
             "Content-Type": "application/json",
         }
 
-        for model in [self.dream_model, self.fallback_model]:
-            try:
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    "top_p": 0.95,
-                }
-                resp = requests.post(
-                    f"{self.api_base}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=30,
-                )
-                if resp.status_code == 200:
-                    text = resp.json()["choices"][0]["message"]["content"].strip()
-                    logger.info(f"做梦系统使用模型: {model}")
-                    return text
-                elif resp.status_code in (401, 403):
-                    # 认证错误，切换模型也没用，直接退出
-                    logger.error(f"做梦系统认证失败 ({resp.status_code})，请检查api_key")
-                    return None
-                elif resp.status_code == 429:
-                    logger.warning(f"模型 {model} 限速 (429)，尝试fallback")
+        timeout = aiohttp.ClientTimeout(total=DEFAULT_API_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for model in [self.dream_model, self.fallback_model]:
+                try:
+                    payload = {
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "top_p": 0.95,
+                    }
+                    async with session.post(
+                        f"{self.api_base}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            text = data["choices"][0]["message"]["content"].strip()
+                            logger.info(f"做梦系统使用模型: {model}")
+                            return text
+                        elif resp.status in (401, 403):
+                            logger.error(f"做梦系统认证失败 ({resp.status})，请检查api_key")
+                            return None
+                        elif resp.status == 429:
+                            logger.warning(f"模型 {model} 限速 (429)，尝试fallback")
+                            continue
+                        else:
+                            logger.warning(f"模型 {model} 返回 {resp.status}，尝试fallback")
+                            continue
+                except asyncio.TimeoutError:
+                    logger.warning(f"模型 {model} 超时，尝试fallback")
                     continue
-                else:
-                    logger.warning(f"模型 {model} 返回 {resp.status_code}，尝试fallback")
+                except Exception as e:
+                    logger.warning(f"模型 {model} 异常: {e}")
                     continue
-            except requests.exceptions.Timeout:
-                logger.warning(f"模型 {model} 超时，尝试fallback")
-                continue
-            except Exception as e:
-                logger.warning(f"模型 {model} 异常: {e}")
-                continue
         return None
 
-    def _call_model(self, prompt, max_tokens=500, temperature=0.9):
-        """异步包装，防止阻塞事件循环"""
-        return self._call_model_sync(prompt, max_tokens, temperature)
-
     # ===== 读取记忆碎片 =====
-    def _read_fragments(self, hours_back=24):
+    def _read_fragments(self, hours_back=FRAGMENT_HOURS_BACK):
         if not self.history_file or not os.path.exists(self.history_file):
             return []
 
@@ -110,8 +131,8 @@ class DreamPlugin(Star):
                         content = entry.get("content", "")
                         if "LLM 响应错误" in content:
                             continue
-                        if len(content) > 300:
-                            content = content[:300] + "..."
+                        if len(content) > FRAGMENT_MAX_LENGTH:
+                            content = content[:FRAGMENT_MAX_LENGTH] + "..."
                         role = entry.get("role", "")
                         fragments.append(
                             {
@@ -125,7 +146,7 @@ class DreamPlugin(Star):
         return fragments
 
     # ===== 知识库补充 =====
-    def _read_kb_supplements(self, num=5):
+    def _read_kb_supplements(self, num=KB_SUPPLEMENTS_COUNT):
         all_texts = []
         if not os.path.exists(self.kb_base_dir):
             return []
@@ -158,10 +179,10 @@ class DreamPlugin(Star):
         if not all_texts:
             return []
         selected = random.sample(all_texts, min(num, len(all_texts)))
-        return [t[:300] for t in selected]
+        return [t[:FRAGMENT_MAX_LENGTH] for t in selected]
 
     # ===== 主题提取 =====
-    def _extract_themes(self, summary):
+    async def _extract_themes(self, summary):
         theme_prompt_tpl = self._cfg("theme_prompt_template", "")
         if theme_prompt_tpl:
             prompt = theme_prompt_tpl.format(summary=summary[:3000])
@@ -171,11 +192,11 @@ class DreamPlugin(Star):
                 "只输出词语，用逗号分隔。不要解释。不要编号。\n\n"
                 f"对话记录：\n{summary[:3000]}\n\n关键词："
             )
-        result = self._call_model(prompt, max_tokens=100, temperature=0.3)
+        result = await self._call_model(prompt, max_tokens=THEME_MAX_TOKENS, temperature=THEME_TEMPERATURE)
         return result or "等待、思念、沉默"
 
     # ===== 生成梦境 =====
-    def _generate_dream(self, summary, themes, count):
+    async def _generate_dream(self, summary, themes, count):
         if self.dream_prompt_template:
             # 使用自定义prompt模板
             prompt = self.dream_prompt_template.format(
@@ -204,7 +225,7 @@ class DreamPlugin(Star):
 7. 语言要有质感
 8. 每个梦用 --- 分隔"""
 
-        return self._call_model(prompt, max_tokens=1000, temperature=0.9)
+        return await self._call_model(prompt, max_tokens=DREAM_MAX_TOKENS, temperature=DREAM_TEMPERATURE)
 
     # ===== 解析梦境 =====
     def _parse_dreams(self, dream_text, themes_str):
@@ -250,12 +271,12 @@ class DreamPlugin(Star):
         return entry
 
     # ===== 做梦主流程 =====
-    def _do_dream(self):
+    async def _do_dream(self):
         fragments = self._read_fragments(hours_back=24)
         source_type = "chat_history"
 
-        if len(fragments) < 20:
-            kb = self._read_kb_supplements(num=5)
+        if len(fragments) < MIN_FRAGMENTS_FOR_KB:
+            kb = self._read_kb_supplements(num=KB_SUPPLEMENTS_COUNT)
             if kb:
                 for text in kb:
                     fragments.append({"time": "", "role": "记忆", "content": text})
@@ -265,12 +286,15 @@ class DreamPlugin(Star):
             return None, "没有任何素材。今天没有梦。"
 
         summary = "\n".join(
-            f"[{f['role']}] {f['content']}" for f in fragments[-60:]
+            f"[{f['role']}] {f['content']}" for f in fragments[-FRAGMENT_MAX_COUNT:]
         )
-        themes = self._extract_themes(summary)
+        themes = await self._extract_themes(summary)
 
-        count = 3 if len(fragments) > 50 else (2 if len(fragments) >= 20 else 1)
-        dream_text = self._generate_dream(summary, themes, count)
+        count = 1
+        for threshold, dream_count in sorted(DREAM_COUNT_THRESHOLDS.items()):
+            if len(fragments) >= threshold:
+                count = dream_count
+        dream_text = await self._generate_dream(summary, themes, count)
 
         if not dream_text:
             return None, "做梦失败。模型不可用。"
@@ -288,7 +312,7 @@ class DreamPlugin(Star):
         yield event.plain_result("开始做梦...")
         try:
             # 在线程池中运行避免阻塞事件循环
-            entry, err = await asyncio.to_thread(self._do_dream)
+            entry, err = await self._do_dream()
             if err:
                 yield event.plain_result(err)
                 return
